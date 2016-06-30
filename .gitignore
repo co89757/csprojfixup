@@ -1,0 +1,6 @@
+*.log
+*.csproj
+xmls/
+*.json
+*.bak
+*.zip
