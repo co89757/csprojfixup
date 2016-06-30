@@ -122,8 +122,17 @@ class XmlFile(object):
         if brother is not None:
             newbrother = et.fromstring(xmlstring)
             brother.addnext(newbrother)
+    def remove_first(self, elementpath):
+        "remove the first-found element given by elementpath"
+        node = self.find_first(elementpath)  
+        if node is not None :
+            self._remove(node)
+            logging.debug("removed one element %s in %s", elementpath, self.filename)
+        else:
+            logging.debug("No element given by %s is found, nothing done ", elementpath)    
 
-
+    def _remove(self, element):
+        self.tree.getroot().remove(element)
     def __enter__(self):
         return self 
     def __exit__(self,exc_type, exc_val, exc_tb):
@@ -370,7 +379,21 @@ def update_dotnet_version_all(rootdir, newversion):
 
 
 
+def remove_package_config(csprojfile):
+    "remove packages.config dependency "
+    with XmlFile(csprojfile) as proj: 
+        emptyitemgrps = 0 
+        proj.remove_first(".//{*}None[@Include='packages.config']") 
 
+        for itemgroup in proj.finditer(".//{*}ItemGroup"): 
+            if len(itemgroup) == 0: 
+                proj._remove(itemgroup)
+                emptyitemgrps +=1 
+                logging.debug("removing empty ItemGroup, total removed count = %d", emptyitemgrps) 
+
+def remove_package_config_all(rootdir):
+    for proj in find_all_files_recur_iter(rootdir):  
+        remove_package_config(proj)
 
 def main():
     usage="""
@@ -386,6 +409,7 @@ def main():
     versionless     - make references versionless so they are not locked to any partiuclar version 
     pathfix         - replace all the HintPath text to correct corext pacakge path according to the provided mapping in a json file
     initlookup      - generate the current reference-to-hintpath JSON file "refs_old.json", you can update the values to the correct paths before you do pathfix
+    rmpkgcfg        - remove all packages.config dependencies in .csproj files 
     Example: %prog --root "path/to/repo" cls  - fixes all CLS-properties under repo root  
     """
     
@@ -427,7 +451,9 @@ def main():
     elif action == 'dotnetver': 
         if options.newversion is None: 
             parser.error("must specify new version for target .NET framework")
-        update_dotnet_version_all(rootdir, options.newversion)  
+        update_dotnet_version_all(rootdir, options.newversion) 
+    elif action == 'rmpkgcfg': 
+        remove_package_config_all(rootdir) 
     else: 
         parser.error("invalid action! please refer to -h manual for valid actions")
 
