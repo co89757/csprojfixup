@@ -126,13 +126,14 @@ class XmlFile(object):
         "remove the first-found element given by elementpath"
         node = self.find_first(elementpath)  
         if node is not None :
+            logging.debug("node found for %s in %s",elementpath, self.filename)   
             self._remove(node)
             logging.debug("removed one element %s in %s", elementpath, self.filename)
         else:
-            logging.debug("No element given by %s is found, nothing done ", elementpath)    
+            logging.debug("No element given by %s is found in %s, nothing done ", elementpath, self.filename)    
 
     def _remove(self, element):
-        self.tree.getroot().remove(element)
+        element.getparent().remove(element)
     def __enter__(self):
         return self 
     def __exit__(self,exc_type, exc_val, exc_tb):
@@ -390,9 +391,10 @@ def remove_package_config(csprojfile):
                 proj._remove(itemgroup)
                 emptyitemgrps +=1 
                 logging.debug("removing empty ItemGroup, total removed count = %d", emptyitemgrps) 
+        proj.overwrite()
 
 def remove_package_config_all(rootdir):
-    for proj in find_all_files_recur_iter(rootdir):  
+    for proj in find_all_files_recur_iter(rootdir,"*.csproj"):  
         remove_package_config(proj)
 
 def main():
