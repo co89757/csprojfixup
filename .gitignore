@@ -2,5 +2,6 @@
 *.csproj
 xmls/
 *.json
+!refs_remap.json
 *.bak
 *.zip

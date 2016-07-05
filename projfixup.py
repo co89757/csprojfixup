@@ -74,10 +74,6 @@ class XmlFile(object):
         return self.tree.find(elempath)
     def finditer(self,elempath):
         return self.tree.iterfind(elempath)
-    def write2(self,file):
-        with open(file, 'w+') as of:
-            of.write(et.tostring(self.tree.getroot(), pretty_print=True))
-
     def write(self,file):
         self.tree.write(file, pretty_print = True, encoding="utf-8", xml_declaration=True)
     def overwrite(self):
@@ -122,8 +118,18 @@ class XmlFile(object):
         if brother is not None:
             newbrother = et.fromstring(xmlstring)
             brother.addnext(newbrother)
+    def remove_first(self, elementpath):
+        "remove the first-found element given by elementpath"
+        node = self.find_first(elementpath)  
+        if node is not None :
+            logging.debug("node found for %s in %s",elementpath, self.filename)   
+            self._remove(node)
+            logging.debug("removed one element %s in %s", elementpath, self.filename)
+        else:
+            logging.debug("No element given by %s is found in %s, nothing done ", elementpath, self.filename)    
 
-
+    def _remove(self, element):
+        element.getparent().remove(element)
     def __enter__(self):
         return self 
     def __exit__(self,exc_type, exc_val, exc_tb):
@@ -192,13 +198,6 @@ def replace_all_hint_paths_from_file(rootdir='.', jsonfile="references.json"):
 
             ## overwrite it 
             xml.overwrite()
-
-
-
-            
-
-    
-
 
 def add_CLS_compliance_property(csprojfile):
     """
@@ -296,12 +295,10 @@ def update_paths_in_reference_lookup(ref_json_file, outfile = None):
 
 def convert_references_to_versionless(csprojfile, exclude_external = True):
     """convert all assembly references to version-agnostic ones
-    
     For example: 
      <Reference Include="Microsoft.WindowsAzure.Configuration, Version=3.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35, processorArchitecture=MSIL">
      turning to 
      <Reference Include="Microsoft.WindowsAzure.Configuration/> 
-    
     Arguments:
         csprojfile {[str]} -- [path to .csproj file ]   
         exclude_external {[boolean]} -- [True to exclude references in External\ folder]
@@ -322,7 +319,7 @@ def convert_references_to_versionless(csprojfile, exclude_external = True):
             else:
                 trimmable = has_version  
 
-
+            
 
             if trimmable:
                 logging.debug("ReferenceName BEFORE: %s" , ref_name)
@@ -352,8 +349,8 @@ def add_qtest_properties(testprojfile):
             logging.debug( "%s already has QTest properties, doing nothing and quitting" , testprojfile) 
             
 
-def add_qtest_properties_to_all(rootdir):
-    for test in find_all_files_recur_iter(rootdir, "*[tT]est*.csproj"):
+def add_qtest_properties_to_all(rootdir, pattern = "*[tT]est*.csproj" ):
+    for test in find_all_files_recur_iter(rootdir, pattern):
         add_qtest_properties(test) 
 
 def update_dotnet_version(csprojfile, newversion):
@@ -363,14 +360,29 @@ def update_dotnet_version(csprojfile, newversion):
     with XmlFile(csprojfile) as prj: 
         prj.find_tag_and_replace_text("TargetFrameworkVersion",newversion) 
         prj.overwrite()
-
+        
 def update_dotnet_version_all(rootdir, newversion):
      for proj in find_all_files_recur_iter(rootdir,"*.csproj"):
          update_dotnet_version(proj, newversion) 
 
 
 
+def remove_package_config(csprojfile):
+    "remove packages.config dependency "
+    with XmlFile(csprojfile) as proj: 
+        emptyitemgrps = 0 
+        proj.remove_first(".//{*}None[@Include='packages.config']") 
 
+        for itemgroup in proj.finditer(".//{*}ItemGroup"): 
+            if len(itemgroup) == 0: 
+                proj._remove(itemgroup)
+                emptyitemgrps +=1 
+                logging.debug("removing empty ItemGroup, total removed count = %d", emptyitemgrps) 
+        proj.overwrite()
+
+def remove_package_config_all(rootdir):
+    for proj in find_all_files_recur_iter(rootdir,"*.csproj"):  
+        remove_package_config(proj)
 
 def main():
     usage="""
@@ -386,9 +398,10 @@ def main():
     versionless     - make references versionless so they are not locked to any partiuclar version 
     pathfix         - replace all the HintPath text to correct corext pacakge path according to the provided mapping in a json file
     initlookup      - generate the current reference-to-hintpath JSON file "refs_old.json", you can update the values to the correct paths before you do pathfix
+    rmpkgcfg        - remove all packages.config dependencies in .csproj files 
     Example: %prog --root "path/to/repo" cls  - fixes all CLS-properties under repo root  
     """
-    
+    ## parse options 
     parser = OptionParser(usage=usage) 
     pathfixopt = OptionGroup(parser,"HintPath Fxiup Options", "Options only for <pathfix> action, for example to specify path mapping file")
     parser.add_option('-r','--root', dest = "rootdir", help = "set rootdir, usually it's your repo rootdir", default=".")
@@ -400,56 +413,51 @@ def main():
     versionless_opt = OptionGroup(parser, "Options for action <versionless>", "Flags to include/exclude binaries under External folder when peeling package-version info" )
     versionless_opt.add_option('--include-external', action='store_true', dest='include_external', help="Flag to include version-peeling for binaries under External folder", default=False)
     parser.add_option_group(versionless_opt)
+    qtest_opt = OptionGroup(parser, "Options for <qtest> action","Specify the glob pattern for the test projects" )
+    qtest_opt.add_option("--glob", dest="qtest_glob", default="*[Tt]est*.csproj", help="specify the glob pattern for test project files, defautls to *[Tt]test*.csproj")
+    parser.add_option_group(qtest_opt)
     (options, args) = parser.parse_args() 
+    
+    ## optimize conditionals to table lookup 
+    fn_cls = lambda opt: add_CLS_compliance_property_to_all(opt.rootdir) 
+    fn_unittest = lambda opt: fix_all_unittest_reference(opt.rootdir) 
+    fn_versionless = lambda opt: peel_version_off_references_for_all(opt.rootdir, not opt.include_external) 
+    def fn_pathfix(opt):
+        if not opt.lookupfile:
+            parser.error("Must specify --map LOOKUPFILE for the remapped reference->hintpath JSON file\n" 
+                "for example --map path/to/remapped_refs.json")
+        replace_all_hint_paths_from_file(opt.rootdir, opt.lookupfile) 
+    fn_initlookup = lambda opt: aggregate_references_to_path_lookup(opt.rootdir, "refs_old.json")
+    fn_qtest = lambda  opt: add_qtest_properties_to_all(opt.rootdir, opt.qtest_glob) 
+    def fn_dotnetver(opt):
+        if opt.newversion is None: 
+            parser.error("must specify new version for target .NET framework")
+        update_dotnet_version_all(opt.rootdir, opt.newversion) 
+    fn_rmpkgcfg = lambda opt: remove_package_config_all(opt.rootdir)
 
+    routes = {
+        "cls" : fn_cls,
+        "unittest" : fn_unittest,
+        "versionless": fn_versionless,
+        "pathfix" : fn_pathfix,
+        "initlookup" : fn_initlookup,
+        "qtest" : fn_qtest,
+        "dotnetver" : fn_dotnetver,
+        "rmpkgcfg": fn_rmpkgcfg
+    }
 
     rootdir = options.rootdir 
     lookupfile = options.lookupfile
     if len(args) != 1:
         parser.error("Must specify one <action>, choose from <cls | unittest | dotnetver | qtest | versionless | pathfix | initlookup> ") 
     action = args[0] 
-    if action == 'cls':
-        add_CLS_compliance_property_to_all(rootdir)
-    elif action == "unittest": 
-        fix_all_unittest_reference(rootdir) 
-    elif action == "versionless": 
 
-        peel_version_off_references_for_all(rootdir, not options.include_external) 
-    elif action == 'pathfix':  
-        if not lookupfile:
-            parser.error("Must specify --map LOOKUPFILE for the remapped reference->hintpath JSON file\n" 
-                "for example --map path/to/remapped_refs.json")
-        replace_all_hint_paths_from_file(rootdir, lookupfile) 
-    elif action == 'initlookup': 
-        aggregate_references_to_path_lookup(rootdir,"refs_old.json")
-    elif action == "qtest": 
-        add_qtest_properties_to_all(rootdir)  
-    elif action == 'dotnetver': 
-        if options.newversion is None: 
-            parser.error("must specify new version for target .NET framework")
-        update_dotnet_version_all(rootdir, options.newversion)  
-    else: 
-        parser.error("invalid action! please refer to -h manual for valid actions")
+    callback = routes.get(action) 
+    if callback is None:
+        parser.error("invalid action! please refer to -h manual for valid actions") 
+    callback(options)
 
-        
-
-
-
-
-
-
-
-
-
-
+## Main entry 
 if __name__ == '__main__':
     main()
-    # rootdir = "." ## your $(INETROOT) here
-    # rootdir = "E:\\repos\\geospatial\\IncrementalGridStore\\" ## your $(INETROOT) here
-    # reference_json_file = "E:\\repos\\geospatial\\IncrementalGridStore\\references.json" ## your $(inetroot)\references.json 
-    # # aggregate_references_to_path_lookup(rootdir)
-    # lookupfile = "C:\\Users\\colinli\\experiment\\scripts\\xml\\refs_remap.json"
-    # replace_all_hint_paths_from_file(rootdir, lookupfile)
-    # peel_version_off_references_for_all(rootdir)
-    # aggregate_references_to_path_lookup(rootdir,"refs2.json")
     
