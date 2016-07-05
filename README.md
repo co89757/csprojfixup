@@ -1,5 +1,5 @@
 # C# Project mangling toolset 
-## prerequisites:
+## Prerequisites:
 - Install python2 and pip (package management tool)
 - install `lxml` package 
 ```sh
